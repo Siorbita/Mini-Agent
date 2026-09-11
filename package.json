@@ -1,0 +1,17 @@
+{
+  "name": "mini-agent-cli",
+  "version": "1.0.0",
+  "description": "Agente CLI autónomo para desarrollo de software",
+  "type": "module",
+  "bin": {
+    "mini-agent": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test",
+    "lint": "node --check index.js && node --check agent.js && node --check tools.js && node --check config.js"
+  },
+  "dependencies": {
+    "openai": "^4.0.0"
+  }
+}
