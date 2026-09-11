@@ -180,7 +180,7 @@ async function processUserTask() {
         tools: toolsSchema,
         parallel_tool_calls: true,
         prompt_cache_key: 'mini-agent-shared',
-        prompt_cache_retention: 'in_memory',
+        prompt_cache_retention: '24h',
       });
       usageStore.record({ model: currentModel, usage: response.usage, error: null });
     } catch (error) {

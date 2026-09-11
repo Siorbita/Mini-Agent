@@ -47,7 +47,7 @@ export async function runAgent(userPrompt, {
         tools: toolsSchema,
         parallel_tool_calls: true,
         prompt_cache_key: 'mini-agent-shared',
-        prompt_cache_retention: 'in_memory',
+        prompt_cache_retention: '24h',
       });
       recordUsage({ model, usage: response.usage });
     } catch (error) {
