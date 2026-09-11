@@ -13,7 +13,7 @@ export function getUsage(response) {
   const cached = Number(usage.prompt_tokens_details?.cached_tokens ?? usage.input_token_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? 0);
   const output = Number(usage.completion_tokens ?? usage.output_tokens ?? 0);
   const total = Number(usage.total_tokens ?? input + output);
-  return { input, cached, output, total };
+  return cached ? { input, cached, output, total } : { input, output, total };
 }
 
 export function estimateCost(usage, model) {
