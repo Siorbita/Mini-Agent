@@ -2,6 +2,25 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { safePath, shouldIgnore } from './security.js';
 
+const MAX_REQUEST_FILE_BYTES = 20 * 1024 * 1024;
+const REQUEST_FILE_TYPES = {
+  '.png': ['image/png', 'input_image'], '.jpg': ['image/jpeg', 'input_image'],
+  '.jpeg': ['image/jpeg', 'input_image'], '.gif': ['image/gif', 'input_image'],
+  '.webp': ['image/webp', 'input_image'], '.pdf': ['application/pdf', 'input_file'],
+  '.txt': ['text/plain', 'input_file'], '.md': ['text/markdown', 'input_file'],
+  '.csv': ['text/csv', 'input_file'], '.json': ['application/json', 'input_file'],
+};
+
+async function requestFile(filePath) {
+  const absolute = safePath(filePath);
+  const stat = await fs.stat(absolute);
+  if (!stat.isFile()) throw new Error(`${filePath} no es un archivo.`);
+  if (stat.size > MAX_REQUEST_FILE_BYTES) throw new Error(`${filePath} supera el límite de 20 MB.`);
+  const type = REQUEST_FILE_TYPES[path.extname(absolute).toLowerCase()];
+  if (!type) throw new Error(`Tipo no compatible: ${path.extname(absolute) || '(sin extensión)'}.`);
+  return { path: filePath, filename: path.basename(absolute), mime_type: type[0], input_type: type[1], data: (await fs.readFile(absolute)).toString('base64') };
+}
+
 export const fileChangeTracker = {
   changes: [],
   reset() { this.changes.length = 0; },
@@ -10,6 +29,15 @@ export const fileChangeTracker = {
 };
 
 export const fileTools = {
+  request_files: async ({ paths }) => {
+    try {
+      if (!Array.isArray(paths) || paths.length < 1 || paths.length > 5) throw new Error('Indica entre 1 y 5 rutas.');
+      const files = await Promise.all(paths.map(requestFile));
+      return JSON.stringify({ success: true, message: 'Archivos disponibles como adjuntos para el modelo.', files });
+    } catch (error) {
+      return JSON.stringify({ success: false, error: error.message });
+    }
+  },
   list_dir: async ({ dir_path = '.' }) => {
     try {
       const entries = await fs.readdir(safePath(dir_path), { withFileTypes: true });
@@ -75,6 +103,9 @@ const tool = (name, description, properties = {}) => ({
 });
 
 export const fileToolsSchemas = [
+  tool('request_files', 'Solicita uno o varios archivos del proyecto y los adjunta al siguiente turno del modelo como base64. Solo lectura.', {
+    paths: { type: 'array', minItems: 1, maxItems: 5, items: stringProperty('Ruta relativa dentro del proyecto') }
+  }),
   tool('list_dir', 'Lista archivos y carpetas del proyecto.', {
     dir_path: stringProperty('Ruta relativa')
   }),

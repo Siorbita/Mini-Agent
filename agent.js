@@ -2,9 +2,10 @@ import 'dotenv/config';
 import OpenAI from 'openai';
 import { toolsImplementations, toolsSchema } from './tools/index.js';
 import { recordUsage } from './usage-store.js';
+import { extractRequestedFiles } from './attachments.js';
 
-const MAX_ITERATIONS = 40;
-const SYSTEM_PROMPT = 'Eres un asistente de desarrollo de software. Puedes explorar y leer archivos, ejecutar comandos seguros y modificar archivos. Antes de modificar archivos debes solicitar confirmación. Usa herramientas en paralelo cuando sea posible. Para búsquedas, investigaciones o información actual, usa web_search y luego web_fetch sobre fuentes relevantes; contrasta varias fuentes cuando sea importante y cita las URLs en la respuesta. Al terminar una tarea, informa claramente qué cambió; no marques plan.txt como completado salvo que la tarea correspondiente esté realmente terminada.';
+
+const SYSTEM_PROMPT = 'Eres un asistente de desarrollo de software. Puedes explorar y leer archivos, ejecutar comandos seguros y modificar archivos. También puedes navegar con Puppeteer: usa browser_navigate, browser_click y browser_type, y browser_screenshot cuando necesites inspeccionar una pantalla. Las capturas se entregan como imágenes. Antes de modificar archivos debes solicitar confirmación. Usa herramientas en paralelo cuando sea posible. Para búsquedas, investigaciones o información actual, usa web_search y luego web_fetch sobre fuentes relevantes; contrasta varias fuentes cuando sea importante y cita las URLs en la respuesta. Al terminar una tarea, informa claramente qué cambió; no marques plan.txt como completado salvo que la tarea correspondiente esté realmente terminada.';
 
 function parseToolArguments(item) {
   try { return JSON.parse(item.arguments || '{}'); } catch { return null; }
@@ -38,7 +39,7 @@ export async function runAgent(userPrompt, {
     { role: 'user', content: userPrompt },
   ];
 
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
+  while (true) {
     let response;
     try {
       response = await openai.responses.create({
@@ -57,7 +58,16 @@ export async function runAgent(userPrompt, {
 
     const calls = response.output.filter((item) => item.type === 'function_call');
     if (!calls.length) return response.output_text || '';
-    input = [...response.output, ...await Promise.all(calls.map((call) => executeToolCall(call, { confirm, onTool })) )];
+    const toolResults = await Promise.all(calls.map((call) => executeToolCall(call, { confirm, onTool })));
+    const requestedContent = [];
+    for (const toolResult of toolResults) {
+      const requestedFiles = extractRequestedFiles(toolResult.output);
+      if (requestedFiles) {
+        toolResult.output = requestedFiles.output;
+        requestedContent.push(...requestedFiles.content);
+      }
+    }
+    input = [...response.output, ...toolResults];
+    if (requestedContent.length) input.push({ role: 'user', content: requestedContent });
   }
-  throw new Error(`Se alcanzó el límite de ${MAX_ITERATIONS} iteraciones.`);
 }

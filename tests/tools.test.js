@@ -26,6 +26,11 @@ test('runCommand ejecuta comandos node sin shell', async () => {
   assert.equal(result.stdout, 'ok');
 });
 
+test('runCommand puede ejecutar npm aunque su lanzador no esté disponible', async () => {
+  const result = await runCommand('npm', ['--version']);
+  assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
+});
+
 test('run_command bloquea comandos destructivos', async () => {
   const result = parse(await toolsImplementations.run_command({ command: 'rm', args: ['-rf', 'x'] }));
   assert.equal(result.success, false);

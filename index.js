@@ -7,6 +7,8 @@ import { fileChangeTracker, toolsImplementations, toolsSchema } from './tools/in
 import { renderMarkdown } from './renderer.js';
 import { formatUsage } from './usage.js';
 import { UsageStore } from './usage-store.js';
+import { extractRequestedFiles, filesToInput } from './attachments.js';
+import { startKeepAwake } from './keep-awake.js';
 
 const args = process.argv.slice(2);
 const hasFlag = (flag) => args.includes(flag);
@@ -21,6 +23,7 @@ let openai;
 const MODELS = { luna: 'gpt-5.6-luna', terra: 'gpt-5.6-terra', sol: 'gpt-5.6-sol', astra: 'gpt-6-astra' };
 let currentModel = MODELS.luna;
 let inputReader;
+const pendingAttachments = [];
 const usageStore = new UsageStore();
 usageStore.startSession();
 let lastInteractionAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -90,11 +93,27 @@ function printWelcome() {
   console.log(color('35', '════════════════════════════════════════════════════════════\n'));
 }
 
+async function addUserMessage(text) {
+  const attachments = pendingAttachments.splice(0);
+  conversationHistory.push(attachments.length
+    ? { role: 'user', content: [{ type: 'input_text', text }, ...attachments] }
+    : { role: 'user', content: text });
+}
+
 async function handleCommand(commandInput) {
   const [command, ...commandArgs] = commandInput.trim().split(/\s+/);
   switch (command.toLowerCase()) {
     case '/help':
-      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/usage [today|month|model] Mostrar consumo y costes\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/clear                   Limpiar conversación\n/help                    Mostrar ayuda');
+      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/usage [today|month|model] Mostrar consumo y costes\n/attach <archivo>        Adjuntar PNG, JPG, WEBP o PDF al siguiente mensaje\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/clear                   Limpiar conversación\n/help                    Mostrar ayuda');
+      break;
+    case '/attach':
+      if (!commandArgs.length) console.log('Uso: /attach <archivo> [archivo2]');
+      else {
+        try {
+          pendingAttachments.push(...await filesToInput(commandArgs));
+          console.log(color('32', `✅ ${commandArgs.length} archivo(s) adjuntado(s) al siguiente mensaje.`));
+        } catch (error) { console.log(color('31', `No se pudo adjuntar: ${error.message}`)); }
+      }
       break;
     case '/usage': {
       const scope = commandArgs[0] || 'all';
@@ -168,10 +187,9 @@ function printFileChangeSummary() {
   fileChangeTracker.reset();
 }
 
-async function processUserTask() {
+async function processUserTaskWithoutKeepAwake() {
   fileChangeTracker.reset();
-  let iterations = 0;
-  while (++iterations <= 40) {
+  while (true) {
     let response;
     try {
       response = await openai.responses.create({
@@ -206,8 +224,35 @@ async function processUserTask() {
       return { type: 'function_call_output', call_id: toolCall.call_id, output: result };
     }));
     conversationHistory.push(...toolResults);
+    // Las capturas no se envían como texto: se convierten en input_image para
+    // que el modelo pueda verlas según el formato de Responses API.
+    for (const toolResult of toolResults) {
+      try {
+        const requestedFiles = extractRequestedFiles(toolResult.output);
+        if (requestedFiles) {
+          toolResult.output = requestedFiles.output;
+          conversationHistory.push({ role: 'user', content: requestedFiles.content });
+          continue;
+        }
+        const payload = JSON.parse(toolResult.output);
+        if (payload.image_data && payload.mime_type?.startsWith('image/')) {
+          const imageData = payload.image_data;
+          delete payload.image_data;
+          toolResult.output = JSON.stringify(payload);
+          conversationHistory.push({ role: 'user', content: [{ type: 'input_image', image_url: `data:${payload.mime_type};base64,${imageData}` }] });
+        }
+      } catch { /* una herramienta puede devolver texto no JSON */ }
+    }
   }
-  throw new Error('Se alcanzó el límite de 40 iteraciones para esta tarea.');
+}
+
+async function processUserTask() {
+  const stopKeepAwake = startKeepAwake();
+  try {
+    return await processUserTaskWithoutKeepAwake();
+  } finally {
+    stopKeepAwake();
+  }
 }
 
 const COMMAND_COMPLETIONS = [
@@ -307,14 +352,14 @@ async function startAgentCLI() {
   try {
     openai = new OpenAI({ apiKey: await setupApiKey() });
     if (!initialPrompt) printWelcome();
-    if (initialPrompt) { conversationHistory.push({ role: 'user', content: initialPrompt }); await processUserTask(); markInteraction(); return; }
+    if (initialPrompt) { await addUserMessage(initialPrompt); await processUserTask(); markInteraction(); return; }
     while (true) {
       printCostSummary();
       const userInput = (await inputReader.question(color('1;34', '> '))).trim();
       if (!userInput) continue;
       if (['/exit', '/quit', '/salir'].includes(userInput.toLowerCase())) break;
       if (userInput.startsWith('/')) await handleCommand(userInput);
-      else { conversationHistory.push({ role: 'user', content: userInput }); await processUserTask(); }
+      else { await addUserMessage(userInput); await processUserTask(); }
       markInteraction();
     }
   } catch (error) { console.error(color('31', `Error: ${error.message}`)); }
