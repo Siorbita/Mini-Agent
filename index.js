@@ -20,7 +20,7 @@ const promptFlagIndex = args.indexOf('--prompt');
 const initialPrompt = promptFlagIndex >= 0 ? args[promptFlagIndex + 1] : args.find((arg) => !arg.startsWith('-'));
 
 let openai;
-const MODELS = { luna: 'gpt-5.6-luna', terra: 'gpt-5.6-terra', sol: 'gpt-5.6-sol', astra: 'gpt-6-astra' };
+const MODELS = { luna: 'gpt-6-luna', terra: 'gpt-5.6-terra', sol: 'gpt-6-sol', astra: 'gpt-6-astra' };
 let currentModel = MODELS.luna;
 let inputReader;
 const pendingAttachments = [];
@@ -311,9 +311,32 @@ function getCommandSuggestions(line) {
     .map(({ value }) => `${command} ${value}`);
 }
 
+const BRACKETED_PASTE_START = '\x1b[200~';
+const BRACKETED_PASTE_END = '\x1b[201~';
+
+function unwrapBracketedPaste(value) {
+  const text = String(value ?? '');
+  const start = text.indexOf(BRACKETED_PASTE_START);
+  if (start < 0) return null;
+  const contentStart = start + BRACKETED_PASTE_START.length;
+  const end = text.indexOf(BRACKETED_PASTE_END, contentStart);
+  if (end < 0) return null;
+  return text.slice(contentStart, end).replace(/\r\n?/g, '\n');
+}
+
+function printPasteNotice(text) {
+  const lineCount = text ? text.split('\n').length : 0;
+  console.log(color('90', `📋 Se han pegado ${lineCount} ${lineCount === 1 ? 'línea' : 'líneas'}. Escribe ahora las instrucciones para este contenido.`));
+}
+
+function combinePasteWithInstruction(pasted, instruction) {
+  return `${instruction}\n\n--- Contenido pegado (${pasted.split('\n').length} ${pasted.split('\n').length === 1 ? 'línea' : 'líneas'}) ---\n${pasted}\n--- Fin del contenido pegado ---`;
+}
+
 function createInput() {
   let rl;
   let multilineBuffer = '';
+  let bracketedPasteEnabled = false;
   const completer = (line) => {
     const suggestions = getCommandSuggestions(line);
     if (!suggestions.length) return [[], line];
@@ -325,24 +348,55 @@ function createInput() {
     async init() {
       const readline = await import('node:readline/promises');
       rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
+      // Activa el modo bracketed paste en terminales compatibles. Así el
+      // terminal envía el bloque completo entre marcadores, en vez de tratar
+      // cada salto de línea pegado como un Enter independiente.
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        process.stdout.write('\x1b[?2004h');
+        bracketedPasteEnabled = true;
+      }
       inputReader = this;
     },
-    async question(prompt) {
+    async question(prompt, { pasteAsContext = false } = {}) {
       const firstLine = await rl.question(prompt);
+      let pasted = unwrapBracketedPaste(firstLine);
+      let wasPaste = pasted !== null;
+      // Node readline normalmente quita los marcadores de pegado al entregar la
+      // línea, pero conserva el salto de línea. En ese caso sigue siendo un
+      // pegado válido aunque ya no podamos ver los marcadores.
+      if (pasted === null && firstLine.includes('\n')) {
+        pasted = firstLine.replace(/\r\n?/g, '\n');
+        wasPaste = true;
+      }
+      if (wasPaste && pasteAsContext) {
+        printPasteNotice(pasted);
+        // No devolvemos el pegado como una orden: esperamos una instrucción
+        // explícita. Así pegar código, logs o un plan nunca dispara al agente
+        // accidentalmente.
+        let instruction;
+        do {
+          instruction = await rl.question(color('1;34', '> Instrucciones sobre lo pegado: '));
+        } while (!instruction.trim());
+        return combinePasteWithInstruction(pasted, instruction.trim());
+      }
+      if (wasPaste) return pasted;
       if (!firstLine.includes('```') && !firstLine.endsWith('\\')) return firstLine;
 
       multilineBuffer = firstLine.endsWith('\\') ? firstLine.slice(0, -1) : firstLine;
       let inFence = (multilineBuffer.match(/```/g) || []).length % 2 === 1;
-      while (inFence || firstLine.endsWith('\\')) {
+      let continued = firstLine.endsWith('\\');
+      while (inFence || continued) {
         const nextLine = await rl.question(color('90', '… '));
-        const continued = nextLine.endsWith('\\');
+        continued = nextLine.endsWith('\\');
         multilineBuffer += `\\n${continued ? nextLine.slice(0, -1) : nextLine}`;
         inFence = (multilineBuffer.match(/```/g) || []).length % 2 === 1;
-        if (!inFence && !continued) break;
       }
       return multilineBuffer;
     },
-    close() { rl?.close(); },
+    close() {
+      if (bracketedPasteEnabled) process.stdout.write('\x1b[?2004l');
+      rl?.close();
+    },
   };
 }
 
@@ -355,7 +409,7 @@ async function startAgentCLI() {
     if (initialPrompt) { await addUserMessage(initialPrompt); await processUserTask(); markInteraction(); return; }
     while (true) {
       printCostSummary();
-      const userInput = (await inputReader.question(color('1;34', '> '))).trim();
+      const userInput = (await inputReader.question(color('1;34', '> '), { pasteAsContext: true })).trim();
       if (!userInput) continue;
       if (['/exit', '/quit', '/salir'].includes(userInput.toLowerCase())) break;
       if (userInput.startsWith('/')) await handleCommand(userInput);

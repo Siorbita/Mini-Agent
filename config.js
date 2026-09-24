@@ -6,7 +6,7 @@ export const CONFIG_DIR = path.join(os.homedir(), '.mini-agent');
 export const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 
 const DEFAULTS = {
-  model: 'gpt-5.6-luna',
+  model: 'gpt-6-luna',
   color: true,
   verbose: false,
   confirmWrites: true,

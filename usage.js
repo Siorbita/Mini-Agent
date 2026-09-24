@@ -1,7 +1,7 @@
 const PRICING_PER_MILLION = {
-  'gpt-5.6-luna': { input: 2.5, output: 10 },
+  'gpt-6-luna': { input: 2.5, output: 10 },
   'gpt-5.6-terra': { input: 1.25, output: 5 },
-  'gpt-5.6-sol': { input: 0.5, output: 2 },
+  'gpt-6-sol': { input: 0.5, output: 2 },
   'gpt-6-astra': { input: 10, output: 50 },
   'gpt-4o': { input: 2.5, output: 10 },
 };

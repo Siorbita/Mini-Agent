@@ -9,6 +9,8 @@ test('getUsage normaliza metadatos de uso de Chat Completions', () => {
 
 test('estimateCost calcula el coste según el modelo', () => {
   assert.equal(estimateCost({ input: 1_000_000, output: 500_000 }, 'gpt-5.6-terra'), 3.75);
+  assert.equal(estimateCost({ input: 1_000_000, output: 500_000 }, 'gpt-6-luna'), 7.5);
+  assert.equal(estimateCost({ input: 1_000_000, output: 500_000 }, 'gpt-6-sol'), 1.5);
   assert.equal(estimateCost({ input: 10, output: 10 }, 'modelo-desconocido'), null);
 });
 

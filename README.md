@@ -42,7 +42,7 @@ La configuración persistente puede contener preferencias como:
 
 ```json
 {
-  "model": "gpt-5.6-luna",
+  "model": "gpt-6-luna",
   "color": true,
   "verbose": false,
   "confirmWrites": true
@@ -77,7 +77,9 @@ Opciones disponibles:
 ## Comandos interactivos
 
 - `/help`: muestra la ayuda.
-- `/model [luna|terra|sol|astra]`: consulta o cambia el modelo. `astra` usa `gpt-6-astra` ($10/1M tokens de entrada, $50/1M de salida).
+- `/model [luna|terra|sol|astra]`: consulta o cambia el modelo. Los modelos nuevos están disponibles como `luna` (`gpt-6-luna`) y `sol` (`gpt-6-sol`); Luna es el modelo predeterminado del proyecto. `astra` usa `gpt-6-astra` ($10/1M tokens de entrada, $50/1M de salida).
+
+El catálogo y los identificadores se contrastaron con la documentación oficial de modelos de OpenAI: <https://developers.openai.com/api/docs/models>. El precio registrado para Luna es $2.50/$10 por millón de tokens (entrada/salida) y para Sol $0.50/$2; se usa únicamente para las estimaciones de `/usage`.
 - `/usage [today|month|modelo]`: consulta tokens, costes y errores registrados en SQLite.
 - `/attach <archivo> [archivo2]`: adjunta imágenes PNG/JPG/WEBP o PDF del dispositivo al siguiente mensaje. Los archivos se codifican como `input_image` o `input_file` siguiendo Responses API y no se copian al proyecto.
 
@@ -110,7 +112,7 @@ const value = 42;
 ```
 ```
 
-La CLI muestra `…` mientras espera las líneas restantes y conserva los saltos de línea.
+La CLI muestra `…` mientras espera las líneas restantes y conserva los saltos de línea. En terminales compatibles también activa el modo *bracketed paste*: al pegar un bloque, muestra un aviso como `📋 Se han pegado 3 líneas` y espera una instrucción explícita. El bloque se envía como contexto de esa instrucción, sin ejecutar el contenido pegado ni sus líneas intermedias.
 
 ## Herramientas
 

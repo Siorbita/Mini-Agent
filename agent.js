@@ -27,7 +27,7 @@ async function executeToolCall(item, { confirm, onTool }) {
 }
 
 export async function runAgent(userPrompt, {
-  model = process.env.OPENAI_MODEL || 'gpt-5.6-luna',
+  model = process.env.OPENAI_MODEL || 'gpt-6-luna',
   apiKey = process.env.OPENAI_API_KEY,
   confirm = async () => false,
   onTool = () => {},
