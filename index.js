@@ -104,7 +104,7 @@ async function handleCommand(commandInput) {
   const [command, ...commandArgs] = commandInput.trim().split(/\s+/);
   switch (command.toLowerCase()) {
     case '/help':
-      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/usage [today|month|model] Mostrar consumo y costes\n/attach <archivo>        Adjuntar PNG, JPG, WEBP o PDF al siguiente mensaje\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/clear                   Limpiar conversación\n/help                    Mostrar ayuda');
+      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/usage [today|month|model] Mostrar consumo y costes\n/attach <archivo>        Adjuntar PNG, JPG, WEBP o PDF al siguiente mensaje\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/new                     Iniciar una sesión nueva\n/clear                   Limpiar conversación\n/help                    Mostrar ayuda');
       break;
     case '/attach':
       if (!commandArgs.length) console.log('Uso: /attach <archivo> [archivo2]');
@@ -143,6 +143,16 @@ async function handleCommand(commandInput) {
     case '/load':
       if (!commandArgs[0]) console.log('Uso: /load <nombre>');
       else await loadSession(commandArgs[0]);
+      break;
+    case '/new':
+      if (commandArgs.length) console.log('Uso: /new');
+      else {
+        conversationHistory.splice(1);
+        pendingAttachments.splice(0);
+        usageStore.startSession();
+        lastInteractionAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        console.log(color('32', '✅ Nueva sesión iniciada. Se conservan el modelo y la configuración.'));
+      }
       break;
     case '/clear':
     case '/reset':
@@ -266,6 +276,7 @@ const COMMAND_COMPLETIONS = [
   { value: '/history', description: 'Listar sesiones guardadas' },
   { value: '/save', description: 'Guardar sesión' },
   { value: '/load', description: 'Cargar sesión' },
+  { value: '/new', description: 'Iniciar una sesión nueva' },
   { value: '/clear', description: 'Limpiar conversación' },
   { value: '/reset', description: 'Limpiar conversación' },
   { value: '/exit', description: 'Salir de la aplicación' },

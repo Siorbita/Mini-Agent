@@ -94,7 +94,8 @@ Antes de cada nuevo input se muestra automáticamente un resumen del consumo des
 - `/history`: lista sesiones guardadas.
 - `/save <nombre>`: guarda la sesión.
 - `/load <nombre>`: carga una sesión.
-- `/clear` o `/reset`: reinicia la conversación.
+- `/new`: inicia una sesión nueva, reinicia el contexto, los adjuntos pendientes y el contador de uso de la sesión; conserva el modelo seleccionado y la configuración. Las sesiones guardadas no se modifican.
+- `/clear` o `/reset`: reinicia la conversación sin reiniciar el contador de uso de la sesión.
 - `exit`, `quit` o `salir`: finaliza la CLI.
 
 Los comandos slash tienen autocompletado contextual con `Tab`: se sugieren comandos al escribir `/` y argumentos como los modelos disponibles después de `/model `. Las flechas permiten recorrer las sugerencias y `Enter` acepta la selección.

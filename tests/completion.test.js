@@ -11,6 +11,7 @@ const getCommandSuggestions = Function(`${constantsSource}\n${functionSource}\nr
 test('sugiere comandos desde la barra', () => {
   assert.ok(getCommandSuggestions('/').includes('/model'));
   assert.deepEqual(getCommandSuggestions('/mo'), ['/model']);
+  assert.deepEqual(getCommandSuggestions('/new'), ['/new']);
 });
 
 test('sugiere argumentos después de un comando', () => {
