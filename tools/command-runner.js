@@ -82,14 +82,15 @@ function spawnCommand(command, args, options) {
   });
 }
 
-export async function runCommand(command, args = [], { cwd, timeout = COMMAND_TIMEOUT } = {}) {
+export async function runCommand(command, args = [], { cwd, timeout = COMMAND_TIMEOUT, signal } = {}) {
+  if (signal?.aborted) throw new DOMException('La ejecución fue cancelada.', 'AbortError');
   const effectiveTimeout = limitTimeout(timeout);
-  const options = { cwd, timeout: effectiveTimeout, maxBuffer: MAX_BUFFER };
+  const options = { cwd, timeout: effectiveTimeout, maxBuffer: MAX_BUFFER, signal };
   const resolved = resolveCommand(command, args);
   try {
     return await execFileAsync(resolved.command, resolved.args, options);
   } catch (error) {
     if (!shouldFallback(error)) throw error;
-    return spawnCommand(resolved.command, resolved.args, { cwd, timeout: effectiveTimeout });
+    return spawnCommand(resolved.command, resolved.args, { cwd, timeout: effectiveTimeout, signal });
   }
 }

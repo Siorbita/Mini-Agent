@@ -26,6 +26,13 @@ test('runCommand ejecuta comandos node sin shell', async () => {
   assert.equal(result.stdout, 'ok');
 });
 
+test('runCommand termina el proceso al recibir una señal de cancelación', async () => {
+  const controller = new AbortController();
+  const command = runCommand(process.execPath, ['-e', 'setTimeout(() => {}, 10000)'], { signal: controller.signal });
+  setTimeout(() => controller.abort(), 30);
+  await assert.rejects(command, { name: 'AbortError' });
+});
+
 test('runCommand puede ejecutar npm aunque su lanzador no esté disponible', async () => {
   const result = await runCommand('npm', ['--version']);
   assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);

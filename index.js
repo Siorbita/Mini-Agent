@@ -3,12 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import OpenAI from 'openai';
+import { emitKeypressEvents } from 'node:readline';
 import { fileChangeTracker, toolsImplementations, toolsSchema } from './tools/index.js';
 import { renderMarkdown } from './renderer.js';
 import { formatUsage } from './usage.js';
 import { UsageStore } from './usage-store.js';
 import { extractRequestedFiles, filesToInput } from './attachments.js';
 import { startKeepAwake } from './keep-awake.js';
+import { ensureLayaServerStarted, stopLayaServer } from './laya/server-manager.js';
+import { formatLayaResult } from './laya/format-result.js';
 
 const args = process.argv.slice(2);
 const hasFlag = (flag) => args.includes(flag);
@@ -31,6 +34,7 @@ const SESSION_DIR = path.join(os.homedir(), '.mini-agent', 'sessions');
 
 const conversationHistory = [{ role: 'system', content: `Eres un asistente CLI de desarrollo de software autónomo.
 Puedes explorar, leer y modificar archivos, ejecutar comandos seguros y consultar Git.
+Para clasificaciones, enrutamiento, señales binarias o puntuaciones estructuradas sobre texto, usa laya_predict: es un decisor local rápido, no un generador de texto. Pasa en state el texto y contexto pertinente; formula preguntas concretas y agrupa preguntas independientes. Usa choice con 2-20 opciones claras y una categoría residual si procede, score para niveles ordenados y noul para sí/no. Interpreta respuestas/probabilidades sin inventar explicaciones ni asumir que la confianza garantiza acierto; valida decisiones de alto impacto y reserva el modelo principal para razonamiento o texto abierto. El servidor local se configura con LAYA_SERVER_URL (por defecto http://127.0.0.1:18765) y la CLI lo inicia y detiene automáticamente junto con el agente; si no está disponible, informa del error de inicio sin inventar respuestas.
 Trabaja de forma autónoma y actúa directamente para cumplir la tarea: no pidas confirmación verbal antes de usar herramientas ni preguntes si el usuario quiere que realices una acción que ya está incluida en su solicitud. La CLI gestiona las confirmaciones de herramientas cuando sean necesarias.
 Solo detente y solicita confirmación explícita antes de acciones claramente destructivas, irreversibles o de riesgo excepcional, como borrar datos importantes, destruir el repositorio o ejecutar comandos con efectos masivos; no trates las modificaciones normales del proyecto como acciones destructivas.
 Si una herramienta devuelve una operación rechazada, explica el motivo y continúa con una alternativa segura cuando sea posible.
@@ -104,7 +108,7 @@ async function handleCommand(commandInput) {
   const [command, ...commandArgs] = commandInput.trim().split(/\s+/);
   switch (command.toLowerCase()) {
     case '/help':
-      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/usage [today|month|model] Mostrar consumo y costes\n/attach <archivo>        Adjuntar PNG, JPG, WEBP o PDF al siguiente mensaje\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/new                     Iniciar una sesión nueva\n/clear                   Limpiar conversación\n/help                    Mostrar ayuda');
+      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/usage [today|month|model] Mostrar consumo y costes\n/attach <archivo>        Adjuntar PNG, JPG, WEBP o PDF al siguiente mensaje\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/new                     Iniciar una sesión nueva\n/clear                   Limpiar conversación\nEsc                      Cancelar respuesta y enviar un nuevo mensaje\n/help                    Mostrar ayuda');
       break;
     case '/attach':
       if (!commandArgs.length) console.log('Uso: /attach <archivo> [archivo2]');
@@ -200,21 +204,37 @@ function printFileChangeSummary() {
 async function processUserTaskWithoutKeepAwake() {
   fileChangeTracker.reset();
   while (true) {
-    let response;
-    try {
-      response = await openai.responses.create({
-        model: currentModel,
-        input: conversationHistory,
-        tools: toolsSchema,
-        parallel_tool_calls: true,
-        prompt_cache_key: 'mini-agent-shared',
-        prompt_cache_retention: '24h',
-      });
-      usageStore.record({ model: currentModel, usage: response.usage, error: null });
-    } catch (error) {
-      usageStore.record({ model: currentModel, usage: null, error });
-      throw error;
+    const requestController = new AbortController();
+    const requestInterrupt = inputReader.waitForInterrupt();
+    const request = openai.responses.create({
+      model: currentModel,
+      input: conversationHistory,
+      tools: toolsSchema,
+      parallel_tool_calls: true,
+      prompt_cache_key: 'mini-agent-shared',
+      prompt_cache_retention: '24h',
+    }, { signal: requestController.signal }).then(
+      (value) => ({ kind: 'response', value }),
+      (error) => ({ kind: 'error', error }),
+    );
+    const requestOutcome = await Promise.race([
+      request,
+      requestInterrupt.triggered.then(() => ({ kind: 'interrupt' })),
+    ]);
+    if (requestOutcome.kind === 'interrupt') {
+      requestController.abort();
+      requestInterrupt.dispose();
+      const userMessage = await requestInterrupt.message;
+      await addUserMessage(userMessage);
+      continue;
     }
+    requestInterrupt.dispose();
+    if (requestOutcome.kind === 'error') {
+      usageStore.record({ model: currentModel, usage: null, error: requestOutcome.error });
+      throw requestOutcome.error;
+    }
+    const response = requestOutcome.value;
+    usageStore.record({ model: currentModel, usage: response.usage, error: null });
     if (VERBOSE && response.usage) console.log(`\n${formatUsage(response, currentModel, { color: !NO_COLOR })}`);
     conversationHistory.push(...response.output);
     const toolCalls = response.output.filter((item) => item.type === 'function_call');
@@ -223,19 +243,51 @@ async function processUserTaskWithoutKeepAwake() {
       printFileChangeSummary();
       return;
     }
-    const toolResults = await Promise.all(toolCalls.map(async (toolCall) => {
+
+    const toolController = new AbortController();
+    const toolInterrupt = inputReader.waitForInterrupt();
+    const toolsPromise = Promise.all(toolCalls.map(async (toolCall) => {
       let toolArgs;
       try { toolArgs = JSON.parse(toolCall.arguments || '{}'); } catch { toolArgs = null; }
       if (!toolArgs) return { type: 'function_call_output', call_id: toolCall.call_id, output: JSON.stringify({ error: 'Argumentos JSON inválidos.' }) };
       renderToolBanner(toolCall.name, toolArgs);
       const allowed = await confirmTool(toolCall.name, toolArgs);
-      const result = !allowed ? JSON.stringify({ success: false, error: 'Operación cancelada por el usuario.' }) : toolsImplementations[toolCall.name] ? await toolsImplementations[toolCall.name](toolArgs) : JSON.stringify({ error: `Herramienta ${toolCall.name} no implementada.` });
+      const result = toolController.signal.aborted
+        ? JSON.stringify({ success: false, error: 'La función no terminó porque el usuario canceló la ejecución.' })
+        : !allowed
+          ? JSON.stringify({ success: false, error: 'Operación cancelada por el usuario.' })
+          : toolsImplementations[toolCall.name]
+            ? await toolsImplementations[toolCall.name](toolArgs, { signal: toolController.signal })
+            : JSON.stringify({ error: `Herramienta ${toolCall.name} no implementada.` });
+      if (toolCall.name === 'laya_predict') {
+        const summary = formatLayaResult(result);
+        if (summary) console.log(`${color('36', '\n📊 Resultado de Laya:')}\n${summary}\n`);
+      }
       renderToolBanner(toolCall.name, toolArgs, 'END');
       return { type: 'function_call_output', call_id: toolCall.call_id, output: result };
     }));
+    const toolOutcome = await Promise.race([
+      toolsPromise.then((value) => ({ kind: 'results', value }), (error) => ({ kind: 'error', error })),
+      toolInterrupt.triggered.then(() => ({ kind: 'interrupt' })),
+    ]);
+    if (toolOutcome.kind === 'interrupt') {
+      toolController.abort();
+      toolInterrupt.dispose();
+      const userMessage = await toolInterrupt.message;
+      const cancelledResults = toolCalls.map((toolCall) => ({
+        type: 'function_call_output',
+        call_id: toolCall.call_id,
+        output: JSON.stringify({ success: false, error: 'La función no terminó porque el usuario canceló la ejecución.' }),
+      }));
+      conversationHistory.push(...cancelledResults);
+      await addUserMessage(userMessage);
+      continue;
+    }
+    toolInterrupt.dispose();
+    if (toolOutcome.kind === 'error') throw toolOutcome.error;
+    const toolResults = toolOutcome.value;
     conversationHistory.push(...toolResults);
-    // Las capturas no se envían como texto: se convierten en input_image para
-    // que el modelo pueda verlas según el formato de Responses API.
+    // Las capturas se convierten en input_image para que el modelo pueda verlas.
     for (const toolResult of toolResults) {
       try {
         const requestedFiles = extractRequestedFiles(toolResult.output);
@@ -358,6 +410,7 @@ function createInput() {
   return {
     async init() {
       const readline = await import('node:readline/promises');
+      emitKeypressEvents(process.stdin);
       rl = readline.createInterface({ input: process.stdin, output: process.stdout, completer });
       // Activa el modo bracketed paste en terminales compatibles. Así el
       // terminal envía el bloque completo entre marcadores, en vez de tratar
@@ -367,6 +420,31 @@ function createInput() {
         bracketedPasteEnabled = true;
       }
       inputReader = this;
+    },
+    waitForInterrupt() {
+      let resolveTriggered;
+      let resolveMessage;
+      let started = false;
+      const triggered = new Promise((resolve) => { resolveTriggered = resolve; });
+      const message = new Promise((resolve) => { resolveMessage = resolve; });
+      const onKeypress = (_text, key) => {
+        if (started || key?.name !== 'escape') return;
+        started = true;
+        process.stdin.removeListener('keypress', onKeypress);
+        resolveTriggered();
+        console.log(color('90', '\\n⏹️  Cancelando la respuesta actual. Escribe tu mensaje:'));
+        (async () => {
+          let text = '';
+          while (!text.trim()) text = await rl.question(color('1;34', '> '));
+          resolveMessage(text.trim());
+        })().catch((error) => resolveMessage(`No se pudo leer el mensaje del usuario: ${error.message}`));
+      };
+      process.stdin.on('keypress', onKeypress);
+      return {
+        triggered,
+        message,
+        dispose() { process.stdin.removeListener('keypress', onKeypress); },
+      };
     },
     async question(prompt, { pasteAsContext = false } = {}) {
       const firstLine = await rl.question(prompt);
@@ -415,6 +493,8 @@ async function startAgentCLI() {
   inputReader = createInput();
   await inputReader.init();
   try {
+    try { await ensureLayaServerStarted(); }
+    catch (error) { console.error(color('33', `Aviso: no se pudo iniciar Laya local: ${error.message}`)); }
     openai = new OpenAI({ apiKey: await setupApiKey() });
     if (!initialPrompt) printWelcome();
     if (initialPrompt) { await addUserMessage(initialPrompt); await processUserTask(); markInteraction(); return; }
@@ -428,7 +508,7 @@ async function startAgentCLI() {
       markInteraction();
     }
   } catch (error) { console.error(color('31', `Error: ${error.message}`)); }
-  finally { inputReader.close(); }
+  finally { await stopLayaServer(); inputReader.close(); }
 }
 
 startAgentCLI();

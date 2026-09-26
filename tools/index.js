@@ -4,9 +4,10 @@ import { commandTools } from './commands.js';
 import { gitTools } from './git.js';
 import { webTools } from './web.js';
 import { browserTools } from './browser.js';
+import { layaTools, layaToolsSchema } from './laya.js';
 
 export { fileChangeTracker };
-export const toolsImplementations = { ...fileTools, ...searchTools, ...commandTools, ...gitTools, ...webTools, ...browserTools };
+export const toolsImplementations = { ...fileTools, ...searchTools, ...commandTools, ...gitTools, ...webTools, ...browserTools, ...layaTools };
 // ./tools/index.js
 
 const stringProperty = (description) => ({ type: 'string', description });
@@ -26,6 +27,7 @@ const tool = (name, description, properties = {}) => ({
 });
 
 export const toolsSchema = [
+  ...layaToolsSchema,
   tool('request_files', 'Solicita uno o varios archivos del proyecto y los adjunta al siguiente turno del modelo como base64. Solo lectura.', {
     paths: { type: 'array', minItems: 1, maxItems: 5, items: stringProperty('Ruta relativa dentro del proyecto') },
   }),

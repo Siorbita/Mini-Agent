@@ -7,9 +7,10 @@
     "mini-agent": "./index.js"
   },
   "scripts": {
+    "postinstall": "node ./scripts/install-laya.js",
     "start": "node index.js",
     "test": "node --test",
-    "lint": "node --check index.js && node --check agent.js && node --check tools.js && node --check config.js"
+    "lint": "node --check index.js && node --check agent.js && node --check tools.js && node --check config.js && node --check laya/server-manager.js && node --check laya/format-result.js && node --check scripts/install-laya.js && node --check scripts/python-runtime.js"
   },
   "dependencies": {
     "openai": "^4.0.0",
