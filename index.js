@@ -13,6 +13,7 @@ import { startKeepAwake } from './keep-awake.js';
 import { ensureLayaServerStarted, stopLayaServer } from './laya/server-manager.js';
 import { formatLayaResult } from './laya/format-result.js';
 import { formatReviewFeedback, reviewGoal } from './goal-review.js';
+import { compactConversation, getContextWindowTokens, shouldCompactConversation } from './conversation-compaction.js';
 
 const args = process.argv.slice(2);
 const hasFlag = (flag) => args.includes(flag);
@@ -268,7 +269,35 @@ async function runGoalReview() {
 async function processUserTaskWithoutKeepAwake() {
   fileChangeTracker.reset();
   let repairAttempts = 0;
+  let lastResponseUsage = null;
+  let compactionFailed = false;
+  const compactModel = process.env.MINI_AGENT_COMPACT_MODEL || MODELS.luna;
   while (true) {
+    const contextStatus = shouldCompactConversation({
+      messages: conversationHistory,
+      tools: toolsSchema,
+      lastUsage: lastResponseUsage,
+      model: currentModel,
+      contextWindowTokens: getContextWindowTokens(currentModel),
+    });
+    if (contextStatus.shouldCompact && !compactionFailed) {
+      console.log(color('90', `\n🧹 Compactando conversación (${contextStatus.contextTokens.toLocaleString('es-ES')} / ${getContextWindowTokens(currentModel).toLocaleString('es-ES')} tokens; umbral 75 %) con ${compactModel}...`));
+      try {
+        const compacted = await compactConversation({ openai, model: compactModel, messages: conversationHistory });
+        if (compacted.usage) usageStore.record({ model: compactModel, usage: compacted.usage, error: null });
+        if (compacted.compacted) {
+          lastResponseUsage = null;
+          console.log(color('32', '✅ Conversación compactada; se conserva el mensaje actual y el resumen del contexto anterior.'));
+        } else {
+          compactionFailed = true;
+          console.log(color('33', `Aviso: no se compactó la conversación: ${compacted.reason}`));
+        }
+      } catch (error) {
+        compactionFailed = true;
+        usageStore.record({ model: compactModel, usage: null, error });
+        console.log(color('33', `Aviso: falló la compactación; se continuará con el historial original: ${error.message}`));
+      }
+    }
     const requestController = new AbortController();
     const requestInterrupt = inputReader.waitForInterrupt();
     const request = openai.responses.create({
@@ -299,6 +328,11 @@ async function processUserTaskWithoutKeepAwake() {
       throw requestOutcome.error;
     }
     const response = requestOutcome.value;
+    const inputTokens = Number(response.usage?.input_tokens ?? response.usage?.prompt_tokens);
+    const outputTokens = Number(response.usage?.output_tokens ?? response.usage?.completion_tokens);
+    lastResponseUsage = Number.isFinite(inputTokens) || Number.isFinite(outputTokens)
+      ? { input_tokens: Number.isFinite(inputTokens) ? inputTokens : 0, output_tokens: Number.isFinite(outputTokens) ? outputTokens : 0 }
+      : null;
     usageStore.record({ model: currentModel, usage: response.usage, error: null });
     if (VERBOSE && response.usage) console.log(`\n${formatUsage(response, currentModel, { color: !NO_COLOR })}`);
     conversationHistory.push(...response.output);

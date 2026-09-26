@@ -76,6 +76,8 @@ Opciones disponibles:
 - `--no`: activa las confirmaciones para escrituras, commits y ramas. Por defecto se omiten.
 - `--yes` o `-y`: alias heredado; mantiene el modo sin confirmaciones.
 
+Cuando el contexto alcanza el 75 % de la capacidad configurada para el modelo activo, la CLI compacta el historial por defecto con el modelo pequeño `gpt-6-luna` antes de continuar. Conserva el mensaje más reciente del usuario literalmente y reemplaza el resto por un resumen; si falla la compactación, continúa con el historial original. Las ventanas predeterminadas son 1.000.000 tokens para `gpt-6-luna`, `gpt-6-sol` y `gpt-6-astra`, y 400.000 para `gpt-5.6-terra`. Puedes declarar otras capacidades con `MINI_AGENT_CONTEXT_WINDOWS`, un objeto JSON cuyas claves son los identificadores de modelo y cuyos valores son sus ventanas en tokens, por ejemplo `{"gpt-6-luna":1000000,"gpt-5.6-terra":200000}`. `MINI_AGENT_CONTEXT_WINDOW_TOKENS` fuerza una capacidad global y `MINI_AGENT_COMPACT_MODEL` permite elegir otro modelo de compactación.
+
 ## Comandos interactivos
 
 - `/help`: muestra la ayuda.
