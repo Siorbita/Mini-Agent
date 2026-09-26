@@ -72,12 +72,14 @@ Opciones disponibles:
 - `--model <modelo>`: selecciona el modelo configurado.
 - `--no-color`: desactiva colores ANSI.
 - `--verbose`: muestra información de uso, tokens y coste estimado.
+- `--no-goal`: desactiva el modo goal, que está activado por defecto.
 - `--no`: activa las confirmaciones para escrituras, commits y ramas. Por defecto se omiten.
 - `--yes` o `-y`: alias heredado; mantiene el modo sin confirmaciones.
 
 ## Comandos interactivos
 
 - `/help`: muestra la ayuda.
+- `/goal [on|off]`: activa o desactiva la revisión automática e independiente de los cambios (activada por defecto). Al terminar una tarea con archivos modificados, un revisor comprueba la evidencia; si encuentra problemas, los devuelve al agente principal para corregirlos. Hay hasta tres rondas de corrección. Si el revisor falla o persisten problemas, el CLI indica que el cambio queda sin verificar. Define `MINI_AGENT_REVIEW_MODEL` para usar otro modelo en la revisión; por defecto usa el modelo actual.
 - `/model [luna|terra|sol|astra]`: consulta o cambia el modelo. Los modelos nuevos están disponibles como `luna` (`gpt-6-luna`) y `sol` (`gpt-6-sol`); Luna es el modelo predeterminado del proyecto. `astra` usa `gpt-6-astra` ($10/1M tokens de entrada, $50/1M de salida).
 
 El catálogo y los identificadores se contrastaron con la documentación oficial de modelos de OpenAI: <https://developers.openai.com/api/docs/models>. El precio registrado para Luna es $2.50/$10 por millón de tokens (entrada/salida) y para Sol $0.50/$2; se usa únicamente para las estimaciones de `/usage`.

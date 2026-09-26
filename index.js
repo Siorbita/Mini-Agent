@@ -12,12 +12,17 @@ import { extractRequestedFiles, filesToInput } from './attachments.js';
 import { startKeepAwake } from './keep-awake.js';
 import { ensureLayaServerStarted, stopLayaServer } from './laya/server-manager.js';
 import { formatLayaResult } from './laya/format-result.js';
+import { formatReviewFeedback, reviewGoal } from './goal-review.js';
 
 const args = process.argv.slice(2);
 const hasFlag = (flag) => args.includes(flag);
 const YES_MODE = !hasFlag('--no');
 const NO_COLOR = hasFlag('--no-color');
 const VERBOSE = hasFlag('--verbose');
+const MAX_GOAL_REVIEW_ROUNDS = 3;
+let goalMode = !hasFlag('--no-goal');
+let currentGoal = '';
+let goalHistoryStartIndex = 1;
 const VERSION = '1.1.0';
 const promptFlagIndex = args.indexOf('--prompt');
 const initialPrompt = promptFlagIndex >= 0 ? args[promptFlagIndex + 1] : args.find((arg) => !arg.startsWith('-'));
@@ -102,14 +107,28 @@ async function addUserMessage(text) {
   conversationHistory.push(attachments.length
     ? { role: 'user', content: [{ type: 'input_text', text }, ...attachments] }
     : { role: 'user', content: text });
+  currentGoal = text;
+  goalHistoryStartIndex = conversationHistory.length - 1;
 }
 
 async function handleCommand(commandInput) {
   const [command, ...commandArgs] = commandInput.trim().split(/\s+/);
   switch (command.toLowerCase()) {
     case '/help':
-      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/usage [today|month|model] Mostrar consumo y costes\n/attach <archivo>        Adjuntar PNG, JPG, WEBP o PDF al siguiente mensaje\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/new                     Iniciar una sesión nueva\n/clear                   Limpiar conversación\nEsc                      Cancelar respuesta y enviar un nuevo mensaje\n/help                    Mostrar ayuda');
+      console.log('/model [luna|terra|sol|astra]  Cambiar modelo\n/goal [on|off]           Activar revisión independiente automática\n/usage [today|month|model] Mostrar consumo y costes\n/attach <archivo>        Adjuntar PNG, JPG, WEBP o PDF al siguiente mensaje\n/status                  Mostrar configuración\n/config                  Mostrar opciones activas\n/pwd                     Mostrar directorio actual\n/version                 Mostrar versión\n/history                 Listar sesiones guardadas\n/save <nombre>           Guardar sesión\n/load <nombre>           Cargar sesión\n/new                     Iniciar una sesión nueva\n/clear                   Limpiar conversación\nEsc                      Cancelar respuesta y enviar un nuevo mensaje\n/help                    Mostrar ayuda');
       break;
+    case '/goal': {
+      const selected = commandArgs[0]?.toLowerCase();
+      if (commandArgs.length > 1 || (selected && !['on', 'off'].includes(selected))) {
+        console.log('Uso: /goal [on|off]');
+      } else if (!selected) {
+        console.log(`Modo goal: ${goalMode ? 'activado' : 'desactivado'}`);
+      } else {
+        goalMode = selected === 'on';
+        console.log(color('32', `✅ Modo goal ${goalMode ? 'activado' : 'desactivado'}.`));
+      }
+      break;
+    }
     case '/attach':
       if (!commandArgs.length) console.log('Uso: /attach <archivo> [archivo2]');
       else {
@@ -126,7 +145,7 @@ async function handleCommand(commandInput) {
       break;
     }
     case '/status':
-      console.log(`Modelo: ${currentModel}\nConfirmaciones: ${YES_MODE ? 'desactivadas (por defecto; --no para activarlas)' : 'activadas (--no)'}\nDirectorio: ${process.cwd()}\nSesiones: ${SESSION_DIR}\nUso: ${usageStore.path}`);
+      console.log(`Modelo: ${currentModel}\nModo goal: ${goalMode ? 'activado' : 'desactivado'}\nConfirmaciones: ${YES_MODE ? 'desactivadas (por defecto; --no para activarlas)' : 'activadas (--no)'}\nDirectorio: ${process.cwd()}\nSesiones: ${SESSION_DIR}\nUso: ${usageStore.path}`);
       break;
     case '/pwd':
       console.log(process.cwd());
@@ -135,7 +154,7 @@ async function handleCommand(commandInput) {
       console.log(`mini-agent v${VERSION}`);
       break;
     case '/config':
-      console.log(`Configuración:\n  modelo: ${currentModel}\n  confirmaciones: ${YES_MODE ? 'desactivadas (por defecto)' : 'activadas (--no)'}\n  color: ${NO_COLOR ? 'desactivado' : 'activado'}\n  verbose: ${VERBOSE ? 'activado' : 'desactivado'}`);
+      console.log(`Configuración:\n  modelo: ${currentModel}\n  modo goal: ${goalMode ? 'activado' : 'desactivado'}\n  confirmaciones: ${YES_MODE ? 'desactivadas (por defecto)' : 'activadas (--no)'}\n  color: ${NO_COLOR ? 'desactivado' : 'activado'}\n  verbose: ${VERBOSE ? 'activado' : 'desactivado'}`);
       break;
     case '/history':
       await listSessions();
@@ -201,8 +220,54 @@ function printFileChangeSummary() {
   fileChangeTracker.reset();
 }
 
+function sanitizeReviewEvidence(value) {
+  if (Array.isArray(value)) return value.map(sanitizeReviewEvidence);
+  if (!value || typeof value !== 'object') return value;
+  if (value.type === 'input_image' || value.type === 'input_file') return `[adjunto ${value.type} omitido]`;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    ['image_data', 'image_url', 'data'].includes(key) && typeof item === 'string' && item.length > 500
+      ? `[contenido binario/base64 omitido: ${item.length} caracteres]`
+      : sanitizeReviewEvidence(item),
+  ]));
+}
+
+function buildGoalReviewEvidence() {
+  const taskMessages = conversationHistory.slice(goalHistoryStartIndex).map(sanitizeReviewEvidence);
+  const changedFiles = [...new Set(fileChangeTracker.list().map((change) => change.path))];
+  const evidence = JSON.stringify({ changed_files: changedFiles, task_messages_and_tool_results: taskMessages }, null, 2);
+  const maximum = 70_000;
+  return evidence.length > maximum
+    ? `${evidence.slice(0, maximum / 2)}\n[... evidencia intermedia truncada ...]\n${evidence.slice(-maximum / 2)}`
+    : evidence;
+}
+
+function printReviewFindings(review) {
+  console.log(color('33', `\n🔎 Revisión independiente: ${review.summary}`));
+  for (const [index, finding] of review.findings.entries()) {
+    console.log(color('33', `  ${index + 1}. [${finding.severity}] ${finding.file}: ${finding.issue}`));
+    if (finding.severity !== 'low' && finding.suggested_fix) console.log(`     Sugerencia: ${finding.suggested_fix}`);
+  }
+}
+
+async function runGoalReview() {
+  const reviewerModel = process.env.MINI_AGENT_REVIEW_MODEL || currentModel;
+  console.log(color('90', `\n🔎 Verificando el cambio con un agente revisor independiente (${reviewerModel})...`));
+  const result = await reviewGoal({
+    openai,
+    model: reviewerModel,
+    goal: currentGoal,
+    evidence: buildGoalReviewEvidence(),
+  });
+  if (result.usage || result.error) {
+    usageStore.record({ model: reviewerModel, usage: result.usage, error: result.error || null });
+  }
+  return result.review;
+}
+
 async function processUserTaskWithoutKeepAwake() {
   fileChangeTracker.reset();
+  let repairAttempts = 0;
   while (true) {
     const requestController = new AbortController();
     const requestInterrupt = inputReader.waitForInterrupt();
@@ -239,6 +304,26 @@ async function processUserTaskWithoutKeepAwake() {
     conversationHistory.push(...response.output);
     const toolCalls = response.output.filter((item) => item.type === 'function_call');
     if (!toolCalls.length) {
+      if (goalMode && fileChangeTracker.list().length) {
+        const review = await runGoalReview();
+        if (review.status === 'pass') {
+          console.log(color('32', `\n✅ Revisión aprobada: ${review.summary}`));
+          for (const finding of review.findings.filter((item) => item.severity === 'low')) {
+            console.log(color('90', `  Nota no bloqueante: ${finding.file}: ${finding.issue}`));
+          }
+        } else if (review.status === 'needs_work') {
+          printReviewFindings(review);
+          if (repairAttempts < MAX_GOAL_REVIEW_ROUNDS) {
+            repairAttempts += 1;
+            console.log(color('33', `↩️  Enviando los hallazgos al agente principal (intento de corrección ${repairAttempts}/${MAX_GOAL_REVIEW_ROUNDS})...\n`));
+            conversationHistory.push({ role: 'developer', content: formatReviewFeedback(review) });
+            continue;
+          }
+          console.log(color('31', `\n⚠️  El cambio sigue sin superar la revisión tras ${MAX_GOAL_REVIEW_ROUNDS} intentos de corrección; no se considera verificado.`));
+        } else {
+          console.log(color('31', `\n⚠️  No se pudo completar la revisión independiente: ${review.summary}. El cambio queda sin verificar.`));
+        }
+      }
       if (response.output_text) console.log(`\n${color('36', `🤖 Agente (${currentModel}):`)}\n${renderMarkdown(response.output_text, { color: !NO_COLOR })}\n`);
       printFileChangeSummary();
       return;
@@ -320,6 +405,7 @@ async function processUserTask() {
 const COMMAND_COMPLETIONS = [
   { value: '/help', description: 'Mostrar ayuda' },
   { value: '/model', description: 'Consultar o cambiar el modelo' },
+  { value: '/goal', description: 'Activar o desactivar revisión independiente' },
   { value: '/usage', description: 'Mostrar consumo y costes' },
   { value: '/status', description: 'Mostrar configuración y estado' },
   { value: '/config', description: 'Mostrar opciones activas' },
@@ -347,6 +433,10 @@ const COMMAND_ARGUMENTS = {
     { value: 'today', description: 'Uso de hoy' },
     { value: 'month', description: 'Uso del mes' },
     { value: 'model', description: 'Uso agrupado por modelo' },
+  ],
+  '/goal': [
+    { value: 'on', description: 'Activar modo goal' },
+    { value: 'off', description: 'Desactivar modo goal' },
   ],
 };
 

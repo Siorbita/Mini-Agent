@@ -11,12 +11,15 @@ const getCommandSuggestions = Function(`${constantsSource}\n${functionSource}\nr
 test('sugiere comandos desde la barra', () => {
   assert.ok(getCommandSuggestions('/').includes('/model'));
   assert.deepEqual(getCommandSuggestions('/mo'), ['/model']);
+  assert.deepEqual(getCommandSuggestions('/goal'), ['/goal']);
   assert.deepEqual(getCommandSuggestions('/new'), ['/new']);
 });
 
 test('sugiere argumentos después de un comando', () => {
   assert.deepEqual(getCommandSuggestions('/model '), ['/model luna', '/model terra', '/model sol', '/model astra']);
   assert.deepEqual(getCommandSuggestions('/model t'), ['/model terra']);
+  assert.deepEqual(getCommandSuggestions('/goal '), ['/goal on', '/goal off']);
+  assert.deepEqual(getCommandSuggestions('/goal o'), ['/goal on', '/goal off']);
 });
 
 test('no sugiere texto normal ni argumentos extra', () => {
