@@ -84,12 +84,12 @@ test('la compactación conserva literalmente el último mensaje del usuario y re
       request = value;
       return { output_text: 'Resumen de contexto y progreso.', usage: { input_tokens: 30, output_tokens: 8 } };
     } } },
-    model: 'gpt-6-sol',
+    model: 'gpt-6.1-sol',
     messages,
   });
 
   assert.equal(result.compacted, true);
-  assert.equal(request.model, 'gpt-6-sol');
+  assert.equal(request.model, 'gpt-6.1-sol');
   assert.equal(messages[0].role, 'system');
   assert.match(messages[1].content, /Resumen de contexto/);
   assert.strictEqual(messages[2], currentUserMessage);
@@ -101,7 +101,7 @@ test('no intenta resumir si el único contenido es el mensaje actual del usuario
   let called = false;
   const result = await compactConversation({
     openai: { responses: { create: async () => { called = true; } } },
-    model: 'gpt-6-sol',
+    model: 'gpt-6.1-sol',
     messages: [{ role: 'system', content: 'sistema' }, { role: 'user', content: 'Petición grande.' }],
   });
   assert.equal(result.compacted, false);

@@ -33,7 +33,8 @@ const initialPrompt = promptFlagIndex >= 0 ? args[promptFlagIndex + 1] : args.fi
 
 let openai;
 let mcpManager;
-const MODELS = { luna: 'gpt-6-luna', terra: 'gpt-5.6-terra', sol: 'gpt-6-sol', astra: 'gpt-6-astra' };
+const MODELS = { luna: 'gpt-6-luna', terra: 'gpt-5.6-terra', sol: 'gpt-6.1-sol', astra: 'gpt-6-astra' };
+const LEGACY_MODEL_IDS = { 'gpt-6-sol': MODELS.sol };
 let currentModel = MODELS.luna;
 let inputReader;
 const pendingAttachments = [];
@@ -91,7 +92,8 @@ async function loadSession(name) {
   const saved = JSON.parse(await fs.readFile(sessionPath(name), 'utf8'));
   if (!Array.isArray(saved.messages) || saved.messages[0]?.role !== 'system') throw new Error('Formato de sesión inválido.');
   conversationHistory.splice(0, conversationHistory.length, ...removeSentImages(saved.messages));
-  if (saved.model && Object.values(MODELS).includes(saved.model)) currentModel = saved.model;
+  const savedModel = LEGACY_MODEL_IDS[saved.model] || saved.model;
+  if (savedModel && Object.values(MODELS).includes(savedModel)) currentModel = savedModel;
   console.log(color('32', `✅ Sesión cargada: ${name}`));
 }
 

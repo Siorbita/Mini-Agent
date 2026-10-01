@@ -2,7 +2,7 @@ const DEFAULT_CONTEXT_WINDOW_TOKENS = 1_000_000;
 export const MODEL_CONTEXT_WINDOWS = Object.freeze({
   'gpt-6-luna': 1_000_000,
   'gpt-5.6-terra': 400_000,
-  'gpt-6-sol': 1_000_000,
+  'gpt-6.1-sol': 1_050_000,
   'gpt-6-astra': 1_000_000,
 });
 export const COMPACTION_THRESHOLD = 0.75;
