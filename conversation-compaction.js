@@ -6,6 +6,16 @@ export const MODEL_CONTEXT_WINDOWS = Object.freeze({
   'gpt-6-astra': 1_000_000,
 });
 export const COMPACTION_THRESHOLD = 0.75;
+export const DEFAULT_MAX_REQUEST_TOKENS = 900_000;
+export const MAX_OUTPUT_TOKENS = 8_000;
+export const REQUEST_COMPACTION_THRESHOLD = 0.8;
+
+export function getMaxRequestTokens(env = process.env) {
+  const configured = Number(env.MINI_AGENT_MAX_REQUEST_TOKENS);
+  return Number.isFinite(configured) && configured > MAX_OUTPUT_TOKENS
+    ? configured
+    : DEFAULT_MAX_REQUEST_TOKENS;
+}
 
 // MINI_AGENT_CONTEXT_WINDOWS permite declarar capacidades distintas por modelo;
 // MINI_AGENT_CONTEXT_WINDOW_TOKENS fuerza una capacidad global.
@@ -24,22 +34,48 @@ export function getContextWindowTokens(model, env = process.env) {
   return MODEL_CONTEXT_WINDOWS[model] || DEFAULT_CONTEXT_WINDOW_TOKENS;
 }
 
-export function estimateConversationTokens(messages, tools = []) {
-  // Aproximación de respaldo cuando la API todavía no ha devuelto usage.
-  // El contador real de la API prevalece cuando está disponible.
-  return Math.ceil(JSON.stringify({ messages, tools }).length / 4);
+function omitImagePayloads(value) {
+  if (Array.isArray(value)) return value.map(omitImagePayloads);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if (typeof item === 'string' && item.length > 2_000
+      && (['image_url', 'image_data'].includes(key) || item.startsWith('data:image/'))) {
+      return [key, '[imagen omitida de la estimación; el contenido visual tiene un coste distinto al texto]'];
+    }
+    return [key, omitImagePayloads(item)];
+  }));
 }
 
-export function shouldCompactConversation({ messages, tools = [], lastUsage, model, contextWindowTokens = getContextWindowTokens(model) }) {
+export function estimateConversationTokens(messages, tools = []) {
+  // Aproximación conservadora cuando la API todavía no ha devuelto usage.
+  // Las imágenes se contabilizan aparte por el modelo y no por el tamaño base64.
+  return Math.ceil(JSON.stringify(omitImagePayloads({ messages, tools })).length / 2);
+}
+
+export function shouldCompactConversation({
+  messages,
+  tools = [],
+  lastUsage,
+  model,
+  contextWindowTokens = getContextWindowTokens(model),
+  maxRequestTokens = getMaxRequestTokens(),
+}) {
   const estimated = estimateConversationTokens(messages, tools);
   const observed = Number(lastUsage?.input_tokens) + Number(lastUsage?.output_tokens);
   const contextTokens = Number.isFinite(observed) && observed > 0
     ? Math.max(estimated, observed)
     : estimated;
+  const requestInputBudget = Math.max(1, maxRequestTokens - MAX_OUTPUT_TOKENS);
+  const thresholdTokens = Math.floor(Math.min(
+    contextWindowTokens * COMPACTION_THRESHOLD,
+    requestInputBudget * REQUEST_COMPACTION_THRESHOLD,
+  ));
   return {
-    shouldCompact: contextTokens >= contextWindowTokens * COMPACTION_THRESHOLD,
+    shouldCompact: contextTokens >= thresholdTokens,
     contextTokens,
-    thresholdTokens: Math.floor(contextWindowTokens * COMPACTION_THRESHOLD),
+    thresholdTokens,
+    maxRequestTokens,
+    requestInputBudget,
   };
 }
 

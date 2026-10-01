@@ -4,6 +4,7 @@ import {
   compactConversation,
   estimateConversationTokens,
   getContextWindowTokens,
+  getMaxRequestTokens,
   shouldCompactConversation,
 } from '../conversation-compaction.js';
 
@@ -34,8 +35,10 @@ test('modelos conocidos usan su capacidad predeterminada sin variables de entorn
   assert.equal(terraWindow, 400_000);
   assert.equal(lunaWindow, 1_000_000);
   const usage = { input_tokens: 320_000, output_tokens: 0 };
+  // El límite preventivo por solicitud es más bajo que las ventanas de contexto,
+  // así que ambos modelos compactan antes de alcanzar el límite de TPM del proyecto.
   assert.equal(shouldCompactConversation({ messages, lastUsage: usage, model: 'gpt-5.6-terra', contextWindowTokens: terraWindow }).shouldCompact, true);
-  assert.equal(shouldCompactConversation({ messages, lastUsage: usage, model: 'gpt-6-luna', contextWindowTokens: lunaWindow }).shouldCompact, false);
+  assert.equal(shouldCompactConversation({ messages, lastUsage: usage, model: 'gpt-6-luna', contextWindowTokens: lunaWindow }).shouldCompact, true);
 });
 
 test('el modelo activo determina su propio umbral de compactación', () => {
@@ -46,8 +49,23 @@ test('el modelo activo determina su propio umbral de compactación', () => {
   assert.equal(shouldCompactConversation({ messages, lastUsage: usage, model: 'gpt-6-luna', contextWindowTokens: getContextWindowTokens('gpt-6-luna', env) }).shouldCompact, false);
 });
 
-test('estimateConversationTokens aporta una estimación positiva de respaldo', () => {
+test('limita preventivamente cada solicitud a 160 000 tokens por defecto y permite configurarlo', () => {
+  assert.equal(getMaxRequestTokens({}), 160_000);
+  assert.equal(getMaxRequestTokens({ MINI_AGENT_MAX_REQUEST_TOKENS: '120000' }), 120_000);
+  assert.equal(getMaxRequestTokens({ MINI_AGENT_MAX_REQUEST_TOKENS: '8000' }), 160_000);
+  assert.equal(getMaxRequestTokens({ MINI_AGENT_MAX_REQUEST_TOKENS: 'invalido' }), 160_000);
+  const messages = [{ role: 'user', content: 'x'.repeat(500_000) }];
+  const status = shouldCompactConversation({ messages, maxRequestTokens: 100_000 });
+  assert.equal(status.requestInputBudget, 92_000);
+  assert.equal(status.thresholdTokens, 73_600);
+  assert.equal(status.shouldCompact, true);
+  assert.ok(status.contextTokens > status.requestInputBudget);
+});
+
+test('estima texto con margen y no cuenta el base64 de imágenes como texto', () => {
   assert.ok(estimateConversationTokens([{ role: 'user', content: 'a'.repeat(100) }]) > 0);
+  const smallImage = estimateConversationTokens([{ role: 'user', content: [{ type: 'input_image', image_url: 'data:image/png;base64,' + 'A'.repeat(10_000) }] }]);
+  assert.ok(smallImage < 1_000);
 });
 
 test('la compactación conserva literalmente el último mensaje del usuario y reemplaza el historial', async () => {

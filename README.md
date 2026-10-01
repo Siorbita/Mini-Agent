@@ -74,9 +74,10 @@ Opciones disponibles:
 - `--verbose`: muestra información de uso, tokens y coste estimado.
 - `--no-goal`: desactiva el modo goal, que está activado por defecto.
 - `--no`: activa las confirmaciones para escrituras, commits y ramas. Por defecto se omiten.
-- `--yes` o `-y`: alias heredado; mantiene el modo sin confirmaciones.
+- `--yes` o `-y`: alias heredado; mantiene el modo sin confirmaciones para escrituras habituales. No omite la autorización del perfil real de Chrome.
+- `--allow-chrome-profile`: autoriza explícitamente el acceso al perfil real de Chrome durante esta ejecución. Sin esta opción, se pide consentimiento interactivo; en modo no interactivo el acceso se rechaza.
 
-Cuando el contexto alcanza el 75 % de la capacidad configurada para el modelo activo, la CLI compacta el historial por defecto con el modelo pequeño `gpt-6-luna` antes de continuar. Conserva el mensaje más reciente del usuario literalmente y reemplaza el resto por un resumen; si falla la compactación, continúa con el historial original. Las ventanas predeterminadas son 1.000.000 tokens para `gpt-6-luna`, `gpt-6-sol` y `gpt-6-astra`, y 400.000 para `gpt-5.6-terra`. Puedes declarar otras capacidades con `MINI_AGENT_CONTEXT_WINDOWS`, un objeto JSON cuyas claves son los identificadores de modelo y cuyos valores son sus ventanas en tokens, por ejemplo `{"gpt-6-luna":1000000,"gpt-5.6-terra":200000}`. `MINI_AGENT_CONTEXT_WINDOW_TOKENS` fuerza una capacidad global y `MINI_AGENT_COMPACT_MODEL` permite elegir otro modelo de compactación.
+La CLI limita por defecto cada solicitud a un máximo preventivo de 160.000 tokens (incluida una reserva de hasta 8.000 tokens de salida) y compacta el historial al acercarse al 80 % del presupuesto de entrada, o al 75 % de la ventana de contexto del modelo si ese umbral es menor. Esto evita enviar prompts desmesurados como el de 254.050 tokens que puede superar un límite TPM de 200.000. La compactación conserva literalmente el mensaje más reciente del usuario y resume el historial anterior; si el contenido actual por sí solo excede el presupuesto, la CLI detiene la solicitud en vez de enviarla sin límite. Como la cuota TPM es compartida y por minuto, otras solicitudes de la organización pueden consumirla y ningún límite local garantiza evitar todos los 429. Ajusta el máximo con `MINI_AGENT_MAX_REQUEST_TOKENS` solo si el límite de tu organización lo permite. Las ventanas predeterminadas son 1.000.000 tokens para `gpt-6-luna`, `gpt-6-sol` y `gpt-6-astra`, y 400.000 para `gpt-5.6-terra`. Puedes declarar otras capacidades con `MINI_AGENT_CONTEXT_WINDOWS`, un objeto JSON cuyas claves son los identificadores de modelo y cuyos valores son sus ventanas en tokens, por ejemplo `{"gpt-6-luna":1000000,"gpt-5.6-terra":200000}`. `MINI_AGENT_CONTEXT_WINDOW_TOKENS` fuerza una capacidad global y `MINI_AGENT_COMPACT_MODEL` permite elegir otro modelo de compactación.
 
 ## Comandos interactivos
 
@@ -88,7 +89,34 @@ El catálogo y los identificadores se contrastaron con la documentación oficial
 - `/usage [today|month|modelo]`: consulta tokens, costes y errores registrados en SQLite.
 - `/attach <archivo> [archivo2]`: adjunta imágenes PNG/JPG/WEBP o PDF del dispositivo al siguiente mensaje. Los archivos se codifican como `input_image` o `input_file` siguiendo Responses API y no se copian al proyecto.
 
-El agente dispone además de `browser_navigate`, `browser_click`, `browser_type` y `browser_screenshot`; Puppeteer descarga/usa Chromium en la instalación y las capturas PNG se vuelven a enviar al modelo como `input_image`. `browser_navigate` acepta `show_browser` para mostrar u ocultar la ventana y `use_user_profile` para elegir entre un perfil aislado o el perfil de Chrome del usuario (cookies, historial y sesiones). El perfil del usuario puede requerir cerrar Chrome previamente; también puedes definir `CHROME_USER_DATA_DIR` si está en una ubicación distinta. `browser_screenshot` acepta `save_path` (una ruta relativa, por ejemplo `screenshots/inicio.png`) para guardar también la imagen dentro del proyecto; usa `null` si solo necesitas inspeccionarla.
+La búsqueda web y la navegación Puppeteer se publican como herramientas MCP con nombres `mcp__mini_agent__web_search`, `mcp__mini_agent__web_fetch` y `mcp__mini_agent__browser_*`; el agente descubre sus esquemas al iniciar. El control visual de Chromium sigue disponible como herramientas directas (`computer_screenshot`, `computer_click`, `computer_type`, `computer_keypress`, `computer_scroll`, `computer_move`) y el control nut.js del escritorio sigue siendo directo (`desktop_*`). Browser MCP también opera dentro de Chromium, no controla aplicaciones nativas ni otras ventanas. Las capturas se envían al modelo como `input_image` una sola vez y, tras una respuesta correcta, se eliminan del historial retenido (también al guardar/cargar una sesión), dejando un marcador de texto pequeño. Para automatización visual, usa `mcp__mini_agent__browser_navigate` con `show_browser: true`, toma `computer_screenshot`, actúa con coordenadas relativas a esa captura y vuelve a inspeccionar después de cada acción importante. La navegación MCP conserva la autorización independiente para el perfil real de Chrome (`use_user_profile: true`), salvo que se inicie con `--allow-chrome-profile`. El perfil del usuario puede requerir cerrar Chrome previamente; también puedes definir `CHROME_USER_DATA_DIR` si está en una ubicación distinta. `mcp__mini_agent__browser_screenshot` acepta `save_path` (una ruta relativa, por ejemplo `screenshots/inicio.png`) para guardar también la imagen dentro del proyecto; usa `null` si solo necesitas inspeccionarla.
+
+Las herramientas `desktop_*` actúan sobre la pantalla real y otras aplicaciones, fuera de Chromium, y se ejecutan automáticamente sin confirmación por herramienta. El sistema operativo puede requerir permisos propios para captura de pantalla/control de accesibilidad. Esto no concede acceso al perfil real de Chrome, que mantiene su autorización independiente.
+
+### MCP y servidores externos
+
+La CLI inicia un servidor MCP local por stdio junto con el agente, descubre sus herramientas con el SDK oficial y las presenta al modelo como funciones `mcp__servidor__herramienta`. Las herramientas web y de Puppeteer de Mini Agent se exponen así; archivos, Git, comandos seguros, Laya, `desktop_*` y el control visual `computer_*` permanecen como tools nativas porque necesitan las políticas y el flujo local de la CLI. Las capturas MCP se convierten en imágenes para el modelo, no en base64 dentro del texto.
+
+Para compartir las integraciones web/navegador con otra aplicación MCP, configura un servidor `stdio` con el comando `node` y el archivo `tools/mcp-server.js` de esta instalación; también puedes ejecutarlo manualmente con `npm run mcp`. El servidor exporta las herramientas MCP de búsqueda web y navegador; por seguridad, las instancias MCP independientes solo usan perfiles aislados y rechazan `use_user_profile: true`. En la CLI integrada se conserva la confirmación separada para el perfil real de Chrome.
+
+Puedes añadir MCPs `stdio` externos en `~/.mini-agent/mcp.json` (o indicar otro archivo con `MINI_AGENT_MCP_CONFIG`):
+
+```json
+{
+  "mcpServers": {
+    "filesystem-extra": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/ruta/permitida"]
+    }
+  }
+}
+```
+
+Cada entrada admite `command`, `args`, `cwd` y un mapa opcional `env`; se inicia sin shell. Añade únicamente servidores de confianza: el programa ejecutable expone sus propias capacidades al agente. Evita guardar secretos en el JSON; declara solo las variables necesarias para ese servidor en `env` y protege ese archivo. Los servidores no disponibles se informan como avisos y las demás herramientas siguen funcionando. Los MCP externos se descubren al principio de cada ejecución y se cierran al salir; las herramientas anotadas como destructivas (o con nombres de acción claramente irreversible) pasan por la confirmación de la CLI cuando se usa `--no`.
+
+### Optimización de nut.js
+
+Las operaciones de escritorio `desktop_*` utilizan nut.js: velocidad del puntero `3000 px/s`, sin pausa entre operaciones del ratón y escritura con `10 ms` entre teclas para conservar fiabilidad. `desktop_sequence` agrupa hasta 25 movimientos, clics, atajos, escritura o scroll en una sola llamada, reduciendo rondas agente/herramienta durante navegación repetitiva. Puedes ajustar las preferencias con `MINI_AGENT_NUT_MOUSE_SPEED` (100–20 000), `MINI_AGENT_NUT_MOUSE_DELAY_MS` (0–1000) y `MINI_AGENT_NUT_KEYBOARD_DELAY_MS` (0–1000); si el destino pierde teclas, incrementa la pausa del teclado. La documentación consultada describe estas opciones y la búsqueda por región, que es más rápida que buscar toda la pantalla: [configuración](https://nutjs.dev/docs/configuration), [control de ratón](https://nutjs.dev/docs/mouse), [teclado](https://nutjs.dev/docs/keyboard) y [pantalla/regiones](https://nutjs.dev/docs/screen).
 
 ### Modelo local Laya
 
@@ -139,8 +167,10 @@ Las herramientas están separadas para facilitar su mantenimiento:
 - `tools/commands.js`: ejecución segura sin shell.
 - `tools/command-runner.js`: ejecutor compartido con fallback transparente a `spawn` cuando el lanzamiento con `execFile` falla por problemas del sistema.
 - `tools/git.js`: estado, diferencias, historial, commits y ramas.
-- `tools/web.js`: búsqueda web y obtención de páginas HTTP/HTTPS con extracción de texto, enlaces o HTML limitado.
-- `tools/browser.js`: navegación controlada con Puppeteer, interacción básica y capturas PNG que el modelo recibe como imágenes.
+- `tools/web.js`: búsqueda web y obtención de páginas HTTP/HTTPS con extracción de texto, enlaces o HTML limitado; se sirven por el MCP integrado.
+- `tools/browser.js`: navegación Puppeteer, interacción básica y capturas PNG, publicadas al agente como tools MCP locales.
+- `tools/mcp.js` y `tools/mcp-server.js`: servidor MCP stdio propio, descubrimiento/llamadas MCP locales y conexión a servidores MCP externos configurados.
+- `tools/desktop.js`: control nut.js del escritorio, incluidas secuencias agrupadas para automatización más rápida.
 - `laya/`: servidor HTTP local de Laya y requisitos Python; `laya/server-manager.js` inicia y detiene el proceso junto con la CLI.
 - `scripts/install-laya.js`: instala/verifica el paquete Python Laya durante `npm install`.
 - `attachments.js`: convierte imágenes y PDF locales en `input_image`/`input_file` de Responses API.

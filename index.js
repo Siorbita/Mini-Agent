@@ -4,20 +4,23 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import OpenAI from 'openai';
 import { emitKeypressEvents } from 'node:readline';
-import { fileChangeTracker, toolsImplementations, toolsSchema } from './tools/index.js';
+import { fileChangeTracker, toolsImplementations } from './tools/index.js';
 import { renderMarkdown } from './renderer.js';
 import { formatUsage } from './usage.js';
 import { UsageStore } from './usage-store.js';
-import { extractRequestedFiles, filesToInput } from './attachments.js';
+import { filesToInput } from './attachments.js';
+import { executeToolCallsSequentially, processToolResults, removeSentImages, requiresChromeProfileConsent } from './tools/agent-tool-flow.js';
 import { startKeepAwake } from './keep-awake.js';
 import { ensureLayaServerStarted, stopLayaServer } from './laya/server-manager.js';
 import { formatLayaResult } from './laya/format-result.js';
 import { formatReviewFeedback, reviewGoal } from './goal-review.js';
-import { compactConversation, getContextWindowTokens, shouldCompactConversation } from './conversation-compaction.js';
+import { compactConversation, getContextWindowTokens, getMaxRequestTokens, MAX_OUTPUT_TOKENS, shouldCompactConversation } from './conversation-compaction.js';
+import { getAvailableToolSchema, McpToolManager, startMiniAgentMcpServer } from './tools/mcp.js';
 
 const args = process.argv.slice(2);
 const hasFlag = (flag) => args.includes(flag);
 const YES_MODE = !hasFlag('--no');
+const ALLOW_CHROME_USER_PROFILE = hasFlag('--allow-chrome-profile');
 const NO_COLOR = hasFlag('--no-color');
 const VERBOSE = hasFlag('--verbose');
 const MAX_GOAL_REVIEW_ROUNDS = 3;
@@ -29,6 +32,7 @@ const promptFlagIndex = args.indexOf('--prompt');
 const initialPrompt = promptFlagIndex >= 0 ? args[promptFlagIndex + 1] : args.find((arg) => !arg.startsWith('-'));
 
 let openai;
+let mcpManager;
 const MODELS = { luna: 'gpt-6-luna', terra: 'gpt-5.6-terra', sol: 'gpt-6-sol', astra: 'gpt-6-astra' };
 let currentModel = MODELS.luna;
 let inputReader;
@@ -37,14 +41,16 @@ const usageStore = new UsageStore();
 usageStore.startSession();
 let lastInteractionAt = new Date().toISOString().replace('T', ' ').slice(0, 19);
 const SESSION_DIR = path.join(os.homedir(), '.mini-agent', 'sessions');
+const currentToolsSchema = () => getAvailableToolSchema(mcpManager?.tools || []);
 
 const conversationHistory = [{ role: 'system', content: `Eres un asistente CLI de desarrollo de software autónomo.
-Puedes explorar, leer y modificar archivos, ejecutar comandos seguros y consultar Git.
+Puedes explorar, leer y modificar archivos, ejecutar comandos seguros y consultar Git. También puedes usar Chromium como una computadora visual: browser_navigate abre páginas; computer_screenshot captura el viewport y computer_click, computer_type, computer_keypress, computer_scroll y computer_move permiten interactuar con coordenadas sin autorización por acción. Revisa capturas después de acciones relevantes. Esta automatización opera dentro de Chromium y no controla otras aplicaciones del escritorio. El control del escritorio real usa herramientas desktop_* y funciona automáticamente; solo requiere los permisos propios del sistema operativo cuando corresponda.
 Para clasificaciones, enrutamiento, señales binarias o puntuaciones estructuradas sobre texto, usa laya_predict: es un decisor local rápido, no un generador de texto. Pasa en state el texto y contexto pertinente; formula preguntas concretas y agrupa preguntas independientes. Usa choice con 2-20 opciones claras y una categoría residual si procede, score para niveles ordenados y noul para sí/no. Interpreta respuestas/probabilidades sin inventar explicaciones ni asumir que la confianza garantiza acierto; valida decisiones de alto impacto y reserva el modelo principal para razonamiento o texto abierto. El servidor local se configura con LAYA_SERVER_URL (por defecto http://127.0.0.1:18765) y la CLI lo inicia y detiene automáticamente junto con el agente; si no está disponible, informa del error de inicio sin inventar respuestas.
 Trabaja de forma autónoma y actúa directamente para cumplir la tarea: no pidas confirmación verbal antes de usar herramientas ni preguntes si el usuario quiere que realices una acción que ya está incluida en su solicitud. La CLI gestiona las confirmaciones de herramientas cuando sean necesarias.
 Solo detente y solicita confirmación explícita antes de acciones claramente destructivas, irreversibles o de riesgo excepcional, como borrar datos importantes, destruir el repositorio o ejecutar comandos con efectos masivos; no trates las modificaciones normales del proyecto como acciones destructivas.
 Si una herramienta devuelve una operación rechazada, explica el motivo y continúa con una alternativa segura cuando sea posible.
 Aprovecha la ejecución paralela de herramientas cuando sea posible.
+Usa las herramientas MCP con nombres mcp__servidor__herramienta cuando sean adecuadas; sus descripciones incluyen el servidor. Las integraciones web y de navegación de Mini Agent se ofrecen a través del servidor MCP mini_agent; conserva como herramientas directas las operaciones de archivos, Git, comandos, Laya y control del escritorio que no estén publicadas por MCP. Consulta las herramientas MCP descubiertas en cada sesión y no inventes nombres ni parámetros.
 Cuando completes una tarea del plan.txt, actualiza su casilla a [x] en la misma operación y confirma qué tarea se completó. No marques tareas parcialmente realizadas.` }];
 
 const color = (code, text) => NO_COLOR ? text : `\x1b[${code}m${text}\x1b[0m`;
@@ -52,6 +58,16 @@ function askConfirmation(message) {
   if (YES_MODE) return Promise.resolve(true);
   if (!inputReader) return Promise.resolve(false);
   return inputReader.question(`${color('33', `\n⚠️  ${message} ¿Continuar? (s/n): `)}`).then((answer) => ['s', 'si', 'sí', 'y', 'yes'].includes(answer.trim().toLowerCase()));
+}
+
+async function askChromeProfileConfirmation() {
+  if (ALLOW_CHROME_USER_PROFILE) return true;
+  if (!inputReader || !process.stdin.isTTY) {
+    console.log(color('33', 'Acceso al perfil real de Chrome bloqueado: requiere confirmación interactiva o iniciar con --allow-chrome-profile.'));
+    return false;
+  }
+  const answer = await inputReader.question(color('33', '\n⚠️  El agente solicita el perfil real de Chrome. Esto da acceso a cookies y sesiones autenticadas, y puede realizar acciones en esas cuentas. ¿Autorizar durante esta ejecución? (s/n): '));
+  return ['s', 'si', 'sí', 'y', 'yes'].includes(answer.trim().toLowerCase());
 }
 
 function renderToolBanner(toolName, toolArgs, status = 'START') {
@@ -66,14 +82,14 @@ function sessionPath(name) {
 
 async function saveSession(name) {
   await fs.mkdir(SESSION_DIR, { recursive: true });
-  await fs.writeFile(sessionPath(name), JSON.stringify({ model: currentModel, messages: conversationHistory }, null, 2));
+  await fs.writeFile(sessionPath(name), JSON.stringify({ model: currentModel, messages: removeSentImages(conversationHistory) }, null, 2));
   console.log(color('32', `✅ Sesión guardada: ${name}`));
 }
 
 async function loadSession(name) {
   const saved = JSON.parse(await fs.readFile(sessionPath(name), 'utf8'));
   if (!Array.isArray(saved.messages) || saved.messages[0]?.role !== 'system') throw new Error('Formato de sesión inválido.');
-  conversationHistory.splice(0, conversationHistory.length, ...saved.messages);
+  conversationHistory.splice(0, conversationHistory.length, ...removeSentImages(saved.messages));
   if (saved.model && Object.values(MODELS).includes(saved.model)) currentModel = saved.model;
   console.log(color('32', `✅ Sesión cargada: ${name}`));
 }
@@ -206,6 +222,7 @@ async function setupApiKey() {
 }
 
 async function confirmTool(name, toolArgs) {
+  if (requiresChromeProfileConsent(name, toolArgs)) return askChromeProfileConfirmation();
   if (!['update_file', 'write_file', 'git_commit', 'git_branch'].includes(name)) return true;
   const target = toolArgs.path || toolArgs.name || '(operación Git)';
   const action = name === 'write_file' ? 'crear o sobrescribir' : name === 'update_file' ? 'modificar' : name === 'git_commit' ? `crear el commit «${toolArgs.message}»` : `crear la rama «${toolArgs.name}»`;
@@ -275,13 +292,13 @@ async function processUserTaskWithoutKeepAwake() {
   while (true) {
     const contextStatus = shouldCompactConversation({
       messages: conversationHistory,
-      tools: toolsSchema,
+      tools: currentToolsSchema(),
       lastUsage: lastResponseUsage,
       model: currentModel,
       contextWindowTokens: getContextWindowTokens(currentModel),
     });
     if (contextStatus.shouldCompact && !compactionFailed) {
-      console.log(color('90', `\n🧹 Compactando conversación (${contextStatus.contextTokens.toLocaleString('es-ES')} / ${getContextWindowTokens(currentModel).toLocaleString('es-ES')} tokens; umbral 75 %) con ${compactModel}...`));
+      console.log(color('90', `\n🧹 Compactando conversación (${contextStatus.contextTokens.toLocaleString('es-ES')} tokens; compactación preventiva desde ${contextStatus.thresholdTokens.toLocaleString('es-ES')}) con ${compactModel}...`));
       try {
         const compacted = await compactConversation({ openai, model: compactModel, messages: conversationHistory });
         if (compacted.usage) usageStore.record({ model: compactModel, usage: compacted.usage, error: null });
@@ -298,12 +315,24 @@ async function processUserTaskWithoutKeepAwake() {
         console.log(color('33', `Aviso: falló la compactación; se continuará con el historial original: ${error.message}`));
       }
     }
+    const requestStatus = shouldCompactConversation({
+      messages: conversationHistory,
+      tools: currentToolsSchema(),
+      lastUsage: lastResponseUsage,
+      model: currentModel,
+      contextWindowTokens: getContextWindowTokens(currentModel),
+      maxRequestTokens: getMaxRequestTokens(),
+    });
+    if (requestStatus.contextTokens > requestStatus.requestInputBudget) {
+      throw new Error(`El contexto aún ocupa aproximadamente ${requestStatus.contextTokens.toLocaleString('es-ES')} tokens, por encima del límite preventivo de entrada (${requestStatus.requestInputBudget.toLocaleString('es-ES')}). No se enviará una solicitud que pueda superar el tope de ${requestStatus.maxRequestTokens.toLocaleString('es-ES')} tokens. Reduce el mensaje/adjuntos o aumenta MINI_AGENT_MAX_REQUEST_TOKENS si tu límite de TPM lo permite.`);
+    }
     const requestController = new AbortController();
     const requestInterrupt = inputReader.waitForInterrupt();
     const request = openai.responses.create({
       model: currentModel,
       input: conversationHistory,
-      tools: toolsSchema,
+      tools: currentToolsSchema(),
+      max_output_tokens: MAX_OUTPUT_TOKENS,
       parallel_tool_calls: true,
       prompt_cache_key: 'mini-agent-shared',
       prompt_cache_retention: '24h',
@@ -328,6 +357,9 @@ async function processUserTaskWithoutKeepAwake() {
       throw requestOutcome.error;
     }
     const response = requestOutcome.value;
+    // Images are sent to the model exactly once. Remove their base64 data from
+    // the retained history as soon as that request succeeds.
+    conversationHistory.splice(0, conversationHistory.length, ...removeSentImages(conversationHistory));
     const inputTokens = Number(response.usage?.input_tokens ?? response.usage?.prompt_tokens);
     const outputTokens = Number(response.usage?.output_tokens ?? response.usage?.completion_tokens);
     lastResponseUsage = Number.isFinite(inputTokens) || Number.isFinite(outputTokens)
@@ -365,26 +397,34 @@ async function processUserTaskWithoutKeepAwake() {
 
     const toolController = new AbortController();
     const toolInterrupt = inputReader.waitForInterrupt();
-    const toolsPromise = Promise.all(toolCalls.map(async (toolCall) => {
+    const toolsPromise = executeToolCallsSequentially(toolCalls, {}, async (toolCall) => {
+      if (toolController.signal.aborted) {
+        return { type: 'function_call_output', call_id: toolCall.call_id, output: JSON.stringify({ success: false, error: 'La función no terminó porque el usuario canceló la ejecución.' }) };
+      }
       let toolArgs;
       try { toolArgs = JSON.parse(toolCall.arguments || '{}'); } catch { toolArgs = null; }
       if (!toolArgs) return { type: 'function_call_output', call_id: toolCall.call_id, output: JSON.stringify({ error: 'Argumentos JSON inválidos.' }) };
       renderToolBanner(toolCall.name, toolArgs);
-      const allowed = await confirmTool(toolCall.name, toolArgs);
+      const originalToolName = mcpManager?.getOriginalToolName(toolCall.name) || toolCall.name;
+      const allowed = mcpManager?.requiresConfirmation(toolCall.name)
+        ? await askConfirmation(`El agente quiere ejecutar la herramienta MCP potencialmente irreversible «${originalToolName}» del servidor «${toolCall.name.split('__')[1]}».`)
+        : await confirmTool(originalToolName, toolArgs);
       const result = toolController.signal.aborted
         ? JSON.stringify({ success: false, error: 'La función no terminó porque el usuario canceló la ejecución.' })
         : !allowed
           ? JSON.stringify({ success: false, error: 'Operación cancelada por el usuario.' })
-          : toolsImplementations[toolCall.name]
-            ? await toolsImplementations[toolCall.name](toolArgs, { signal: toolController.signal })
-            : JSON.stringify({ error: `Herramienta ${toolCall.name} no implementada.` });
-      if (toolCall.name === 'laya_predict') {
+          : mcpManager?.tools.some((tool) => tool.name === toolCall.name)
+            ? await mcpManager.call(toolCall.name, toolArgs)
+            : toolsImplementations[toolCall.name]
+              ? await toolsImplementations[toolCall.name](toolArgs, { signal: toolController.signal })
+              : JSON.stringify({ error: `Herramienta ${toolCall.name} no implementada.` });
+      if (originalToolName === 'laya_predict') {
         const summary = formatLayaResult(result);
         if (summary) console.log(`${color('36', '\n📊 Resultado de Laya:')}\n${summary}\n`);
       }
       renderToolBanner(toolCall.name, toolArgs, 'END');
       return { type: 'function_call_output', call_id: toolCall.call_id, output: result };
-    }));
+    });
     const toolOutcome = await Promise.race([
       toolsPromise.then((value) => ({ kind: 'results', value }), (error) => ({ kind: 'error', error })),
       toolInterrupt.triggered.then(() => ({ kind: 'interrupt' })),
@@ -404,26 +444,9 @@ async function processUserTaskWithoutKeepAwake() {
     }
     toolInterrupt.dispose();
     if (toolOutcome.kind === 'error') throw toolOutcome.error;
-    const toolResults = toolOutcome.value;
+    const { toolResults, requestedContent } = processToolResults(toolOutcome.value);
     conversationHistory.push(...toolResults);
-    // Las capturas se convierten en input_image para que el modelo pueda verlas.
-    for (const toolResult of toolResults) {
-      try {
-        const requestedFiles = extractRequestedFiles(toolResult.output);
-        if (requestedFiles) {
-          toolResult.output = requestedFiles.output;
-          conversationHistory.push({ role: 'user', content: requestedFiles.content });
-          continue;
-        }
-        const payload = JSON.parse(toolResult.output);
-        if (payload.image_data && payload.mime_type?.startsWith('image/')) {
-          const imageData = payload.image_data;
-          delete payload.image_data;
-          toolResult.output = JSON.stringify(payload);
-          conversationHistory.push({ role: 'user', content: [{ type: 'input_image', image_url: `data:${payload.mime_type};base64,${imageData}` }] });
-        }
-      } catch { /* una herramienta puede devolver texto no JSON */ }
-    }
+    if (requestedContent.length) conversationHistory.push({ role: 'user', content: requestedContent });
   }
 }
 
@@ -617,6 +640,12 @@ async function startAgentCLI() {
   inputReader = createInput();
   await inputReader.init();
   try {
+    mcpManager = new McpToolManager();
+    const mcpStatus = await mcpManager.start();
+    if (mcpStatus.errors.length) {
+      for (const error of mcpStatus.errors) console.error(color('33', `Aviso MCP: ${error}`));
+    }
+    console.log(color('90', `MCP conectados: ${mcpStatus.connected.join(', ') || 'ninguno'}. Configuración: ${mcpStatus.configPath}`));
     try { await ensureLayaServerStarted(); }
     catch (error) { console.error(color('33', `Aviso: no se pudo iniciar Laya local: ${error.message}`)); }
     openai = new OpenAI({ apiKey: await setupApiKey() });
@@ -632,7 +661,14 @@ async function startAgentCLI() {
       markInteraction();
     }
   } catch (error) { console.error(color('31', `Error: ${error.message}`)); }
-  finally { await stopLayaServer(); inputReader.close(); }
+  finally { await mcpManager?.close(); await stopLayaServer(); inputReader.close(); }
 }
 
-startAgentCLI();
+if (hasFlag('--mcp-server')) {
+  startMiniAgentMcpServer().catch((error) => {
+    console.error(`Mini Agent MCP server failed: ${error.message}`);
+    process.exitCode = 1;
+  });
+} else {
+  startAgentCLI();
+}
