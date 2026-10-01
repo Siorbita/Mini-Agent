@@ -32,8 +32,10 @@ test('modelos conocidos usan su capacidad predeterminada sin variables de entorn
   const messages = [{ role: 'system', content: 's' }, { role: 'user', content: 'hola' }];
   const terraWindow = getContextWindowTokens('gpt-5.6-terra', {});
   const lunaWindow = getContextWindowTokens('gpt-6-luna', {});
+  const solWindow = getContextWindowTokens('gpt-6.1-sol', {});
   assert.equal(terraWindow, 400_000);
   assert.equal(lunaWindow, 1_000_000);
+  assert.equal(solWindow, 1_050_000);
   const usage = { input_tokens: 320_000, output_tokens: 0 };
   // El límite preventivo por solicitud es más bajo que las ventanas de contexto,
   // así que ambos modelos compactan antes de alcanzar el límite de TPM del proyecto.

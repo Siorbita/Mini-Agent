@@ -1,6 +1,6 @@
 {
   "name": "sio-mini-agent",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Agente CLI autónomo para desarrollo de software",
   "type": "module",
   "bin": {
