@@ -5,10 +5,13 @@ import { gitTools } from './git.js';
 import { webTools } from './web.js';
 import { browserTools } from './browser.js';
 import { desktopTools } from './desktop.js';
+import { windowsAutomationTools, windowsAutomationToolsSchema } from './windows-uia.js';
 import { layaTools, layaToolsSchema } from './laya.js';
 
 export { fileChangeTracker };
-export const toolsImplementations = { ...fileTools, ...searchTools, ...commandTools, ...gitTools, ...webTools, ...browserTools, ...desktopTools, ...layaTools };
+const windowsOnlyTools = process.platform === 'win32' ? windowsAutomationTools : {};
+const windowsOnlySchemas = process.platform === 'win32' ? windowsAutomationToolsSchema : [];
+export const toolsImplementations = { ...fileTools, ...searchTools, ...commandTools, ...gitTools, ...webTools, ...browserTools, ...desktopTools, ...windowsOnlyTools, ...layaTools };
 // ./tools/index.js
 
 const stringProperty = (description) => ({ type: 'string', description });
@@ -29,6 +32,7 @@ const tool = (name, description, properties = {}) => ({
 
 export const toolsSchema = [
   ...layaToolsSchema,
+  ...windowsOnlySchemas,
   tool('request_files', 'Solicita uno o varios archivos del proyecto y los adjunta al siguiente turno del modelo como base64. Solo lectura.', {
     paths: { type: 'array', minItems: 1, maxItems: 5, items: stringProperty('Ruta relativa dentro del proyecto') },
   }),

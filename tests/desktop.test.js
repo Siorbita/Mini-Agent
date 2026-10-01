@@ -15,6 +15,14 @@ test('registra las herramientas de control de escritorio', () => {
   }
 });
 
+test('UI Automation solo se registra en Windows y no se expone al agente en otras plataformas', () => {
+  const windowsOnly = ['desktop_inspect', 'desktop_click_element'];
+  for (const name of windowsOnly) {
+    assert.equal(toolsSchema.some((tool) => tool.name === name), process.platform === 'win32', `${name} coincide con la plataforma`);
+    assert.equal(typeof toolsImplementations[name], process.platform === 'win32' ? 'function' : 'undefined', `${name} no se expone fuera de Windows`);
+  }
+});
+
 test('desktop_sequence limita las secuencias antes de activar el backend nut.js', async () => {
   const invalid = JSON.parse(await toolsImplementations.desktop_sequence({ actions: [] }));
   assert.equal(invalid.success, false);

@@ -11,7 +11,7 @@
     "start": "node index.js",
     "mcp": "node tools/mcp-server.js",
     "test": "node --test",
-    "lint": "node --check index.js && node --check agent.js && node --check tools.js && node --check tools/agent-tool-flow.js && node --check tools/browser.js && node --check tools/desktop.js && node --check tools/mcp.js && node --check tools/mcp-server.js && node --check config.js && node --check laya/server-manager.js && node --check laya/format-result.js && node --check goal-review.js && node --check conversation-compaction.js && node --check scripts/install-laya.js && node --check scripts/python-runtime.js"
+    "lint": "node --check index.js && node --check agent.js && node --check tools.js && node --check tools/agent-tool-flow.js && node --check tools/browser.js && node --check tools/desktop.js && node --check tools/windows-uia.js && node --check tools/mcp.js && node --check tools/mcp-server.js && node --check config.js && node --check laya/server-manager.js && node --check laya/format-result.js && node --check goal-review.js && node --check conversation-compaction.js && node --check scripts/install-laya.js && node --check scripts/python-runtime.js"
   },
   "dependencies": {
     "@computer-use/nut-js": "^4.2.0",
